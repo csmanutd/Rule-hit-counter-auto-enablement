@@ -4,6 +4,7 @@ import (
     "bufio"
     "bytes"
     "encoding/json"
+    "flag"
     "fmt"
     "io/ioutil"
     "log"
@@ -20,53 +21,100 @@ type PCEConfig struct {
     OrgID     string `json:"org_id"`
 }
 
-type ReportStatus struct {
-    Enabled bool `json:"enabled"`
-}
-
-type FirewallSettings struct {
-    RuleHitCountEnabledScopes [][]interface{} `json:"rule_hit_count_enabled_scopes"`
-}
-
-func loadOrCreatePCEConfig() (PCEConfig, error) {
-    configFilePath := "pce.json"
+func loadOrCreatePCEConfig(configFilePath string) (PCEConfig, error) {
     var config PCEConfig
 
     if _, err := os.Stat(configFilePath); os.IsNotExist(err) {
-        fmt.Println("Configuration file not found, please provide the following details:")
-        reader := bufio.NewReader(os.Stdin)
-
-        fmt.Print("API Key: ")
-        apiKey, _ := reader.ReadString('\n')
-        fmt.Print("API Secret: ")
-        apiSecret, _ := reader.ReadString('\n')
-        fmt.Print("FQDN: ")
-        fqdn, _ := reader.ReadString('\n')
-        fmt.Print("Port: ")
-        port, _ := reader.ReadString('\n')
-        fmt.Print("Org ID: ")
-        orgID, _ := reader.ReadString('\n')
-
-        config = PCEConfig{
-            APIKey:    strings.TrimSpace(apiKey),
-            APISecret: strings.TrimSpace(apiSecret),
-            FQDN:      strings.TrimSpace(fqdn),
-            Port:      strings.TrimSpace(port),
-            OrgID:     strings.TrimSpace(orgID),
-        }
-
-        configData, _ := json.MarshalIndent(config, "", "  ")
-        ioutil.WriteFile(configFilePath, configData, 0644)
-        fmt.Println("Configuration saved to pce.json.")
+        fmt.Printf("Configuration file not found at %s, please provide the following details:\n", configFilePath)
+        config = promptUserForConfig()
+        saveConfigToFile(config, configFilePath)
     } else {
         configData, err := ioutil.ReadFile(configFilePath)
         if err != nil {
             return config, err
         }
         json.Unmarshal(configData, &config)
+
+        // Check for missing fields and prompt for input
+        if isConfigIncomplete(config) {
+            fmt.Println("Some configuration details are missing. Please provide the missing details:")
+            config = promptUserForMissingConfig(config)
+            saveConfigToFile(config, configFilePath)
+        }
     }
 
     return config, nil
+}
+
+func isConfigIncomplete(config PCEConfig) bool {
+    return config.APIKey == "" || config.APISecret == "" || config.FQDN == "" || config.Port == "" || config.OrgID == ""
+}
+
+func promptUserForConfig() PCEConfig {
+    reader := bufio.NewReader(os.Stdin)
+
+    fmt.Print("API Key: ")
+    apiKey, _ := reader.ReadString('\n')
+    fmt.Print("API Secret: ")
+    apiSecret, _ := reader.ReadString('\n')
+    fmt.Print("FQDN: ")
+    fqdn, _ := reader.ReadString('\n')
+    fmt.Print("Port: ")
+    port, _ := reader.ReadString('\n')
+    fmt.Print("Org ID: ")
+    orgID, _ := reader.ReadString('\n')
+
+    return PCEConfig{
+        APIKey:    strings.TrimSpace(apiKey),
+        APISecret: strings.TrimSpace(apiSecret),
+        FQDN:      strings.TrimSpace(fqdn),
+        Port:      strings.TrimSpace(port),
+        OrgID:     strings.TrimSpace(orgID),
+    }
+}
+
+func promptUserForMissingConfig(config PCEConfig) PCEConfig {
+    reader := bufio.NewReader(os.Stdin)
+
+    if config.APIKey == "" {
+        fmt.Print("API Key: ")
+        apiKey, _ := reader.ReadString('\n')
+        config.APIKey = strings.TrimSpace(apiKey)
+    }
+    if config.APISecret == "" {
+        fmt.Print("API Secret: ")
+        apiSecret, _ := reader.ReadString('\n')
+        config.APISecret = strings.TrimSpace(apiSecret)
+    }
+    if config.FQDN == "" {
+        fmt.Print("FQDN: ")
+        fqdn, _ := reader.ReadString('\n')
+        config.FQDN = strings.TrimSpace(fqdn)
+    }
+    if config.Port == "" {
+        fmt.Print("Port: ")
+        port, _ := reader.ReadString('\n')
+        config.Port = strings.TrimSpace(port)
+    }
+    if config.OrgID == "" {
+        fmt.Print("Org ID: ")
+        orgID, _ := reader.ReadString('\n')
+        config.OrgID = strings.TrimSpace(orgID)
+    }
+
+    return config
+}
+
+func saveConfigToFile(config PCEConfig, configFilePath string) {
+    configData, err := json.MarshalIndent(config, "", "  ")
+    if err != nil {
+        log.Fatalf("Failed to save configuration: %v", err)
+    }
+    err = ioutil.WriteFile(configFilePath, configData, 0644)
+    if err != nil {
+        log.Fatalf("Error writing to file: %v", err)
+    }
+    fmt.Printf("Configuration saved to %s.\n", configFilePath)
 }
 
 func makeAPICall(url, method, apiKey, apiSecret, payload string) (int, []byte, error) {
@@ -105,7 +153,9 @@ func checkReportStatus(config PCEConfig) (bool, error) {
         return false, fmt.Errorf("failed to fetch report status, HTTP Code: %d", statusCode)
     }
 
-    var reportStatus ReportStatus
+    var reportStatus struct {
+        Enabled bool `json:"enabled"`
+    }
     if err := json.Unmarshal(body, &reportStatus); err != nil {
         return false, err
     }
@@ -125,7 +175,9 @@ func checkFirewallSettings(config PCEConfig) (bool, error) {
         return false, fmt.Errorf("failed to fetch firewall settings, HTTP Code: %d", statusCode)
     }
 
-    var firewallSettings FirewallSettings
+    var firewallSettings struct {
+        RuleHitCountEnabledScopes [][]interface{} `json:"rule_hit_count_enabled_scopes"`
+    }
     if err := json.Unmarshal(body, &firewallSettings); err != nil {
         return false, err
     }
@@ -134,7 +186,11 @@ func checkFirewallSettings(config PCEConfig) (bool, error) {
 }
 
 func main() {
-    config, err := loadOrCreatePCEConfig()
+    // Allow user to specify a config file path
+    configFilePath := flag.String("config", "pce.json", "Path to the configuration file")
+    flag.Parse()
+
+    config, err := loadOrCreatePCEConfig(*configFilePath)
     if err != nil {
         log.Fatalf("Error loading or creating config: %v", err)
     }
