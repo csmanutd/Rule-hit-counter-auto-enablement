@@ -2,25 +2,15 @@ package main
 
 import (
 	"bufio"
-	"bytes"
-	"crypto/tls"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"os"
 	"strings"
-)
 
-type PCEConfig struct {
-	APIKey    string `json:"api_key"`
-	APISecret string `json:"api_secret"`
-	FQDN      string `json:"fqdn"`
-	Port      string `json:"port"`
-	OrgID     string `json:"org_id"`
-}
+	"github.com/csmanutd/pceutils"
+)
 
 type ReportStatus struct {
 	Enabled bool `json:"enabled"`
@@ -35,128 +25,12 @@ type Label struct {
 	Value string `json:"value"`
 }
 
-func loadOrCreatePCEConfig(configFile string) (PCEConfig, error) {
-	var config PCEConfig
-
-	// Check if the specified config file exists
-	if _, err := os.Stat(configFile); os.IsNotExist(err) {
-		fmt.Println("Configuration file not found, please provide the following details:")
-		reader := bufio.NewReader(os.Stdin)
-
-		fmt.Print("API Key: ")
-		apiKey, _ := reader.ReadString('\n')
-		fmt.Print("API Secret: ")
-		apiSecret, _ := reader.ReadString('\n')
-		fmt.Print("FQDN: ")
-		fqdn, _ := reader.ReadString('\n')
-		fmt.Print("Port: ")
-		port, _ := reader.ReadString('\n')
-		fmt.Print("Org ID: ")
-		orgID, _ := reader.ReadString('\n')
-
-		config = PCEConfig{
-			APIKey:    strings.TrimSpace(apiKey),
-			APISecret: strings.TrimSpace(apiSecret),
-			FQDN:      strings.TrimSpace(fqdn),
-			Port:      strings.TrimSpace(port),
-			OrgID:     strings.TrimSpace(orgID),
-		}
-
-		configData, _ := json.MarshalIndent(config, "", "  ")
-		os.WriteFile(configFile, configData, 0644)
-		fmt.Println("Configuration saved to", configFile)
-	} else {
-		configData, err := os.ReadFile(configFile)
-		if err != nil {
-			return config, err
-		}
-		json.Unmarshal(configData, &config)
-	}
-
-	// Check if any field is missing
-	missing := false
-	if config.APIKey == "" || config.APISecret == "" || config.FQDN == "" || config.Port == "" || config.OrgID == "" {
-		missing = true
-	}
-
-	if missing {
-		reader := bufio.NewReader(os.Stdin)
-		if config.APIKey == "" {
-			fmt.Print("API Key: ")
-			apiKey, _ := reader.ReadString('\n')
-			config.APIKey = strings.TrimSpace(apiKey)
-		}
-		if config.APISecret == "" {
-			fmt.Print("API Secret: ")
-			apiSecret, _ := reader.ReadString('\n')
-			config.APISecret = strings.TrimSpace(apiSecret)
-		}
-		if config.FQDN == "" {
-			fmt.Print("FQDN: ")
-			fqdn, _ := reader.ReadString('\n')
-			config.FQDN = strings.TrimSpace(fqdn)
-		}
-		if config.Port == "" {
-			fmt.Print("Port: ")
-			port, _ := reader.ReadString('\n')
-			config.Port = strings.TrimSpace(port)
-		}
-		if config.OrgID == "" {
-			fmt.Print("Org ID: ")
-			orgID, _ := reader.ReadString('\n')
-			config.OrgID = strings.TrimSpace(orgID)
-		}
-
-		configData, _ := json.MarshalIndent(config, "", "  ")
-		os.WriteFile(configFile, configData, 0644)
-		fmt.Println("Updated and saved configuration to", configFile)
-	}
-
-	return config, nil
-}
-
-func makeAPICall(url, method, apiKey, apiSecret, payload string, insecure bool) (int, []byte, error) {
-	// Create an HTTP client
-	client := &http.Client{}
-	if insecure {
-		// Disable certificate checking
-		tr := &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		}
-		client = &http.Client{Transport: tr}
-	}
-
-	// Create the request
-	req, err := http.NewRequest(method, url, bytes.NewBuffer([]byte(payload)))
-	if err != nil {
-		return 0, nil, err
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.SetBasicAuth(apiKey, apiSecret)
-
-	// Execute the request
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, nil, err
-	}
-	defer resp.Body.Close()
-
-	// Read the response
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0, nil, err
-	}
-
-	return resp.StatusCode, body, nil
-}
-
-func checkAndEnableReport(config PCEConfig, insecure bool) error {
+func checkAndEnableReport(config pceutils.PCEConfig, insecure bool) error {
 	fmt.Println("Checking if the report is already enabled...")
 
 	// GET API to check report status
 	url := fmt.Sprintf("https://%s:%s/api/v2/orgs/%s/report_templates/rule_hit_count_report", config.FQDN, config.Port, config.OrgID)
-	statusCode, body, err := makeAPICall(url, "GET", config.APIKey, config.APISecret, "", insecure)
+	statusCode, body, err := pceutils.MakeAPICall(url, "GET", config.APIKey, config.APISecret, "", insecure)
 	if err != nil || statusCode < 200 || statusCode >= 300 {
 		return fmt.Errorf("failed to fetch report status, HTTP Code: %d, Error: %v", statusCode, err)
 	}
@@ -178,7 +52,7 @@ func checkAndEnableReport(config PCEConfig, insecure bool) error {
 	enableURL := fmt.Sprintf("https://%s:%s/api/v2/orgs/%s/report_templates/rule_hit_count_report", config.FQDN, config.Port, config.OrgID)
 	payload := `{"enabled": true}`
 
-	statusCode, response, err := makeAPICall(enableURL, "PUT", config.APIKey, config.APISecret, payload, insecure)
+	statusCode, response, err := pceutils.MakeAPICall(enableURL, "PUT", config.APIKey, config.APISecret, payload, insecure)
 	if err != nil || statusCode < 200 || statusCode >= 300 {
 		return fmt.Errorf("failed to enable report, HTTP Code: %d, Error: %v", statusCode, err)
 	}
@@ -187,10 +61,10 @@ func checkAndEnableReport(config PCEConfig, insecure bool) error {
 	return nil
 }
 
-func checkLabelHref(config PCEConfig, labelValue string, insecure bool) (string, error) {
+func checkLabelHref(config pceutils.PCEConfig, labelValue string, insecure bool) (string, error) {
 	// Fetch all labels
 	url := fmt.Sprintf("https://%s:%s/api/v2/orgs/%s/labels", config.FQDN, config.Port, config.OrgID)
-	statusCode, body, err := makeAPICall(url, "GET", config.APIKey, config.APISecret, "", insecure)
+	statusCode, body, err := pceutils.MakeAPICall(url, "GET", config.APIKey, config.APISecret, "", insecure)
 	if err != nil || statusCode < 200 || statusCode >= 300 {
 		return "", fmt.Errorf("failed to fetch labels, HTTP Code: %d, Error: %v", statusCode, err)
 	}
@@ -219,7 +93,7 @@ func main() {
 	flag.Parse()
 
 	// Load the configuration
-	config, err := loadOrCreatePCEConfig(*configFile)
+	config, err := pceutils.LoadOrCreatePCEConfig(*configFile)
 	if err != nil {
 		log.Fatalf("Error loading or creating config: %v", err)
 	}
@@ -299,7 +173,7 @@ func main() {
 
 	// First, check the current settings to see if the action is necessary
 	fmt.Println("Checking current firewall settings to see if the rule hit count is already enabled...")
-	statusCode, currentSettingsBody, err := makeAPICall(url, "GET", config.APIKey, config.APISecret, "", *insecure)
+	statusCode, currentSettingsBody, err := pceutils.MakeAPICall(url, "GET", config.APIKey, config.APISecret, "", *insecure)
 	if err != nil || statusCode < 200 || statusCode >= 300 {
 		log.Fatalf("Failed to fetch current firewall settings, HTTP Code: %d, Error: %v", statusCode, err)
 	}
@@ -336,7 +210,7 @@ func main() {
 
 	// If not equal, proceed with making the API call to enable rule hit count
 	fmt.Println("Enabling rule hit count based on the new scope configuration...")
-	statusCode, response, err := makeAPICall(url, "PUT", config.APIKey, config.APISecret, payload, *insecure)
+	statusCode, response, err := pceutils.MakeAPICall(url, "PUT", config.APIKey, config.APISecret, payload, *insecure)
 	if err != nil || statusCode < 200 || statusCode >= 300 {
 		log.Fatalf("Failed to enable rule hit count, HTTP Code: %d, Error: %v", statusCode, err)
 	}
@@ -356,7 +230,7 @@ func main() {
             "change_subset":{"firewall_settings":[{"href":"/orgs/%s/sec_policy/draft/firewall_settings"}]}
         }`, config.OrgID)
 
-		statusCode, provisionResponse, err := makeAPICall(provisionURL, "POST", config.APIKey, config.APISecret, provisionPayload, *insecure)
+		statusCode, provisionResponse, err := pceutils.MakeAPICall(provisionURL, "POST", config.APIKey, config.APISecret, provisionPayload, *insecure)
 		if err != nil || statusCode < 200 || statusCode >= 300 {
 			log.Fatalf("Failed to provision changes, HTTP Code: %d, Error: %v", statusCode, err)
 		}
