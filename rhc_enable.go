@@ -25,12 +25,12 @@ type Label struct {
 	Value string `json:"value"`
 }
 
-func checkAndEnableReport(config pceutils.PCEConfig, insecure bool) error {
+func checkAndEnableReport(pceInfo pceutils.PCEInfo, insecure bool) error {
 	fmt.Println("Checking if the report is already enabled...")
 
 	// GET API to check report status
-	url := fmt.Sprintf("https://%s:%s/api/v2/orgs/%s/report_templates/rule_hit_count_report", config.FQDN, config.Port, config.OrgID)
-	statusCode, body, err := pceutils.MakeAPICall(url, "GET", config.APIKey, config.APISecret, "", insecure)
+	url := fmt.Sprintf("https://%s:%s/api/v2/orgs/%s/report_templates/rule_hit_count_report", pceInfo.FQDN, pceInfo.Port, pceInfo.OrgID)
+	statusCode, body, err := pceutils.MakeAPICall(url, "GET", pceInfo.APIKey, pceInfo.APISecret, "", insecure)
 	if err != nil || statusCode < 200 || statusCode >= 300 {
 		return fmt.Errorf("failed to fetch report status, HTTP Code: %d, Error: %v", statusCode, err)
 	}
@@ -49,10 +49,10 @@ func checkAndEnableReport(config pceutils.PCEConfig, insecure bool) error {
 
 	// PUT API to enable the report
 	fmt.Println("Enabling report in PCE...")
-	enableURL := fmt.Sprintf("https://%s:%s/api/v2/orgs/%s/report_templates/rule_hit_count_report", config.FQDN, config.Port, config.OrgID)
+	enableURL := fmt.Sprintf("https://%s:%s/api/v2/orgs/%s/report_templates/rule_hit_count_report", pceInfo.FQDN, pceInfo.Port, pceInfo.OrgID)
 	payload := `{"enabled": true}`
 
-	statusCode, response, err := pceutils.MakeAPICall(enableURL, "PUT", config.APIKey, config.APISecret, payload, insecure)
+	statusCode, response, err := pceutils.MakeAPICall(enableURL, "PUT", pceInfo.APIKey, pceInfo.APISecret, payload, insecure)
 	if err != nil || statusCode < 200 || statusCode >= 300 {
 		return fmt.Errorf("failed to enable report, HTTP Code: %d, Error: %v", statusCode, err)
 	}
@@ -61,10 +61,10 @@ func checkAndEnableReport(config pceutils.PCEConfig, insecure bool) error {
 	return nil
 }
 
-func checkLabelHref(config pceutils.PCEConfig, labelValue string, insecure bool) (string, error) {
+func checkLabelHref(pceInfo pceutils.PCEInfo, labelValue string, insecure bool) (string, error) {
 	// Fetch all labels
-	url := fmt.Sprintf("https://%s:%s/api/v2/orgs/%s/labels", config.FQDN, config.Port, config.OrgID)
-	statusCode, body, err := pceutils.MakeAPICall(url, "GET", config.APIKey, config.APISecret, "", insecure)
+	url := fmt.Sprintf("https://%s:%s/api/v2/orgs/%s/labels", pceInfo.FQDN, pceInfo.Port, pceInfo.OrgID)
+	statusCode, body, err := pceutils.MakeAPICall(url, "GET", pceInfo.APIKey, pceInfo.APISecret, "", insecure)
 	if err != nil || statusCode < 200 || statusCode >= 300 {
 		return "", fmt.Errorf("failed to fetch labels, HTTP Code: %d, Error: %v", statusCode, err)
 	}
@@ -88,18 +88,50 @@ func checkLabelHref(config pceutils.PCEConfig, labelValue string, insecure bool)
 
 func main() {
 	// Handle command-line flags
-	configFile := flag.String("config", "pce.json", "Path to the configuration file")
+	pceName := flag.String("pce", "", "Name of the PCE to use")
 	insecure := flag.Bool("insecure", false, "Ignore SSL certificate errors")
 	flag.Parse()
 
 	// Load the configuration
-	config, err := pceutils.LoadOrCreatePCEConfig(*configFile)
+	config, err := pceutils.LoadOrCreatePCEConfig("pce.json")
 	if err != nil {
 		log.Fatalf("Error loading or creating config: %v", err)
 	}
 
+	// If pceName is not provided, use the default
+	if *pceName == "" {
+		*pceName = config.DefaultPCEName
+	}
+
+	// Get the PCE info
+	pceInfo, ok := config.PCEs[*pceName]
+	if !ok {
+		reader := bufio.NewReader(os.Stdin)
+		fmt.Printf("PCE '%s' not found. Do you want to add it? (y/n): ", *pceName)
+		answer, _ := reader.ReadString('\n')
+		answer = strings.TrimSpace(strings.ToLower(answer))
+
+		if answer == "y" || answer == "yes" {
+			pceInfo = pceutils.CreateNewPCEInfo()
+			config.PCEs[*pceName] = pceInfo
+			pceutils.SaveConfig("pce.json", config)
+			fmt.Println("New PCE added and saved to configuration.")
+		} else {
+			for {
+				fmt.Print("Please enter an existing PCE name: ")
+				*pceName, _ = reader.ReadString('\n')
+				*pceName = strings.TrimSpace(*pceName)
+				pceInfo, ok = config.PCEs[*pceName]
+				if ok {
+					break
+				}
+				fmt.Printf("PCE '%s' not found. Please try again.\n", *pceName)
+			}
+		}
+	}
+
 	// Step 1: Check and enable report in PCE (First API)
-	err = checkAndEnableReport(config, *insecure)
+	err = checkAndEnableReport(pceInfo, *insecure)
 	if err != nil {
 		log.Fatalf("Error enabling report: %v", err)
 	}
@@ -121,7 +153,7 @@ func main() {
 		// Handle label input
 		var scopes []map[string]map[string]string
 		for {
-			labelHref, err := checkLabelHref(config, labelInput, *insecure)
+			labelHref, err := checkLabelHref(pceInfo, labelInput, *insecure)
 			if err != nil {
 				fmt.Println(err)
 				fmt.Print("Please enter a valid label:")
@@ -154,26 +186,12 @@ func main() {
 		payload = string(payloadBytes)
 	}
 
-	//	// 创建 payload 后
-	//	fmt.Println("Generated payload:")
-	//	fmt.Println(payload)
-
-	//	reader = bufio.NewReader(os.Stdin)
-	//	fmt.Print("Do you want to continue with this payload? (y/n): ")
-	//	answer, _ := reader.ReadString('\n')
-	//	answer = strings.TrimSpace(strings.ToLower(answer))
-
-	//	if answer != "y" && answer != "yes" {
-	//		fmt.Println("Operation cancelled by user.")
-	//		return
-	//	}
-
-	// 继续执行 API 调用
-	url := fmt.Sprintf("https://%s:%s/api/v2/orgs/%s/sec_policy/draft/firewall_settings", config.FQDN, config.Port, config.OrgID)
+	// Update the API calls to use pceInfo
+	url := fmt.Sprintf("https://%s:%s/api/v2/orgs/%s/sec_policy/draft/firewall_settings", pceInfo.FQDN, pceInfo.Port, pceInfo.OrgID)
 
 	// First, check the current settings to see if the action is necessary
 	fmt.Println("Checking current firewall settings to see if the rule hit count is already enabled...")
-	statusCode, currentSettingsBody, err := pceutils.MakeAPICall(url, "GET", config.APIKey, config.APISecret, "", *insecure)
+	statusCode, currentSettingsBody, err := pceutils.MakeAPICall(url, "GET", pceInfo.APIKey, pceInfo.APISecret, "", *insecure)
 	if err != nil || statusCode < 200 || statusCode >= 300 {
 		log.Fatalf("Failed to fetch current firewall settings, HTTP Code: %d, Error: %v", statusCode, err)
 	}
@@ -210,7 +228,7 @@ func main() {
 
 	// If not equal, proceed with making the API call to enable rule hit count
 	fmt.Println("Enabling rule hit count based on the new scope configuration...")
-	statusCode, response, err := pceutils.MakeAPICall(url, "PUT", config.APIKey, config.APISecret, payload, *insecure)
+	statusCode, response, err := pceutils.MakeAPICall(url, "PUT", pceInfo.APIKey, pceInfo.APISecret, payload, *insecure)
 	if err != nil || statusCode < 200 || statusCode >= 300 {
 		log.Fatalf("Failed to enable rule hit count, HTTP Code: %d, Error: %v", statusCode, err)
 	}
@@ -224,13 +242,13 @@ func main() {
 	confirmation = strings.TrimSpace(confirmation)
 	if strings.ToLower(confirmation) == "y" || confirmation == "" {
 		fmt.Println("Provisioning changes...")
-		provisionURL := fmt.Sprintf("https://%s:%s/api/v2/orgs/%s/sec_policy", config.FQDN, config.Port, config.OrgID)
+		provisionURL := fmt.Sprintf("https://%s:%s/api/v2/orgs/%s/sec_policy", pceInfo.FQDN, pceInfo.Port, pceInfo.OrgID)
 		provisionPayload := fmt.Sprintf(`{
             "update_description":"Enable rule hit count",
             "change_subset":{"firewall_settings":[{"href":"/orgs/%s/sec_policy/draft/firewall_settings"}]}
-        }`, config.OrgID)
+        }`, pceInfo.OrgID)
 
-		statusCode, provisionResponse, err := pceutils.MakeAPICall(provisionURL, "POST", config.APIKey, config.APISecret, provisionPayload, *insecure)
+		statusCode, provisionResponse, err := pceutils.MakeAPICall(provisionURL, "POST", pceInfo.APIKey, pceInfo.APISecret, provisionPayload, *insecure)
 		if err != nil || statusCode < 200 || statusCode >= 300 {
 			log.Fatalf("Failed to provision changes, HTTP Code: %d, Error: %v", statusCode, err)
 		}
