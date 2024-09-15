@@ -8,5 +8,8 @@ If rule hit count is already enabled, nothing will be updated.
 
 Download the release and execute on Linux:  
   
-./rhc_enable --config \<pce json file\>  
-\* by default, it uses pce.json in the local directory
+./rhc_enable --pce \<pce name\>  
+  
+No need to use --pce for the 1st time.  
+For the 1st time run, it will ask you to save pce config to pce.json in the local folder.  
+You can save multiple pce configs in the json file and use --pce to specify the pce. By default, the 1st pce will be the default one.  
